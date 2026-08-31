@@ -15,6 +15,15 @@ import java.util.concurrent.atomic.AtomicInteger;
  */
 public final class FFTPipelineManager {
 
+    public record PipelineMetrics(
+            double readTimeMs,
+            double computeTimeMs,
+            double exportTimeMs,
+            double totalTimeMs,
+            int chunksProcessed,
+            double chunksPerSecond
+    ) {}
+
     private final String wavPath;
     private final int numWorkers;
     private final int windowSize;
@@ -30,16 +39,25 @@ public final class FFTPipelineManager {
     }
 
     public void run() throws Exception {
-        System.out.println("=== FFT Concurrente: Productor-Consumidor / Master-Worker ===");
-        System.out.printf("Archivo: %s | Workers: %d | Ventana: %d | Hop: %d%n",
-                wavPath, numWorkers, windowSize, hopSize);
+        execute(true, true);
+    }
+
+    public PipelineMetrics execute(boolean verbose, boolean exportCsv) throws Exception {
+        if (verbose) {
+            System.out.println("=== FFT Concurrente: Productor-Consumidor / Master-Worker ===");
+            System.out.printf("Archivo: %s | Workers: %d | Ventana: %d | Hop: %d%n",
+                    wavPath, numWorkers, windowSize, hopSize);
+        }
 
         long tReadStart = System.nanoTime();
         WavReader.WavData wav = new WavReader().read(wavPath);
         long tReadEnd = System.nanoTime();
-        System.out.printf("Lectura WAV: %d muestras, %d Hz, %d canal(es) [%.2f ms]%n",
-                wav.samples.length, wav.sampleRate, wav.channels,
-                (tReadEnd - tReadStart) / 1_000_000.0);
+        double readMs = (tReadEnd - tReadStart) / 1_000_000.0;
+
+        if (verbose) {
+            System.out.printf("Lectura WAV: %d muestras, %d Hz, %d canal(es) [%.2f ms]%n",
+                    wav.samples.length, wav.sampleRate, wav.channels, readMs);
+        }
 
         int numChunks = Math.max(1, (wav.samples.length - windowSize) / hopSize + 1);
 
@@ -64,22 +82,35 @@ public final class FFTPipelineManager {
         boolean finished = workerPool.awaitTermination(5, TimeUnit.MINUTES);
         long tComputeEnd = System.nanoTime();
 
-        if (!finished) {
+        if (!finished && verbose) {
             System.err.println("ADVERTENCIA: los workers no terminaron dentro del tiempo límite.");
         }
 
         double computeMs = (tComputeEnd - tComputeStart) / 1_000_000.0;
-        System.out.printf("Chunks procesados: %d / %d [%.2f ms, %.1f chunks/seg]%n",
-                processedChunks.get(), numChunks, computeMs,
-                processedChunks.get() / (computeMs / 1000.0));
+        double chunksPerSec = processedChunks.get() / (computeMs / 1000.0);
 
-        long tExportStart = System.nanoTime();
-        resultMatrix.exportToCsv(outputCsv);
-        long tExportEnd = System.nanoTime();
-        System.out.printf("Espectrograma exportado a '%s' [%.2f ms]%n",
-                outputCsv, (tExportEnd - tExportStart) / 1_000_000.0);
+        if (verbose) {
+            System.out.printf("Chunks procesados: %d / %d [%.2f ms, %.1f chunks/seg]%n",
+                    processedChunks.get(), numChunks, computeMs, chunksPerSec);
+        }
 
-        double totalMs = (tReadEnd - tReadStart + tComputeEnd - tComputeStart + tExportEnd - tExportStart) / 1_000_000.0;
-        System.out.printf("Tiempo total del pipeline: %.2f ms%n", totalMs);
+        double exportMs = 0.0;
+        if (exportCsv && outputCsv != null && !outputCsv.isEmpty()) {
+            long tExportStart = System.nanoTime();
+            resultMatrix.exportToCsv(outputCsv);
+            long tExportEnd = System.nanoTime();
+            exportMs = (tExportEnd - tExportStart) / 1_000_000.0;
+
+            if (verbose) {
+                System.out.printf("Espectrograma exportado a '%s' [%.2f ms]%n", outputCsv, exportMs);
+            }
+        }
+
+        double totalMs = readMs + computeMs + exportMs;
+        if (verbose) {
+            System.out.printf("Tiempo total del pipeline: %.2f ms%n", totalMs);
+        }
+
+        return new PipelineMetrics(readMs, computeMs, exportMs, totalMs, processedChunks.get(), chunksPerSec);
     }
 }
