@@ -60,18 +60,6 @@ src/main/java/escom/chris/
 ### Requisitos
 - **Java Development Kit (JDK) 21** o superior instalado.
 
-### 1. Compilar el proyecto
-Desde la carpeta raíz del proyecto, ejecuta el siguiente comando:
-```powershell
-javac -d target/classes src/main/java/escom/chris/*.java src/main/java/escom/chris/audio/*.java src/main/java/escom/chris/concurrency/*.java src/main/java/escom/chris/math/*.java
-```
-
-### 2. Ejecutar el pipeline
-Ejecuta la clase principal con los argumentos requeridos:
-```powershell
-java -cp target/classes escom.chris.Main <archivo.wav> [numWorkers] [windowSize] [hopSize] [salida.csv]
-```
-
 #### Parámetros:
 - `<archivo.wav>`: Ruta al archivo de audio de entrada (ej. `src/main/resources/audio.wav`).
 - `[numWorkers]` *(Opcional)*: Número de hilos consumidores concurrentes (por defecto: número de núcleos de la CPU).
@@ -79,7 +67,3 @@ java -cp target/classes escom.chris.Main <archivo.wav> [numWorkers] [windowSize]
 - `[hopSize]` *(Opcional)*: Desplazamiento entre ventanas en muestras (por defecto: `windowSize / 2` para 50% de solapamiento).
 - `[salida.csv]` *(Opcional)*: Nombre del archivo de salida del espectrograma (por defecto: `spectrogram.csv`).
 
-#### Ejemplo de ejecución:
-```powershell
-java -cp target/classes escom.chris.Main "src/main/resources/audio.wav" 4 1024 512 "espectro_salida.csv"
-```
