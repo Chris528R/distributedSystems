@@ -113,4 +113,37 @@ public final class FFTPipelineManager {
 
         return new PipelineMetrics(readMs, computeMs, exportMs, totalMs, processedChunks.get(), chunksPerSec);
     }
+
+    /**
+     * Ejecuta el pipeline concurrente de cálculo FFT sobre un arreglo de muestras en memoria.
+     * Utilizado directamente por el servidor TCP al recibir el flujo binario.
+     */
+    public static SharedResultMatrix compute(double[] samples, int windowSize, int hopSize, int numWorkers) throws Exception {
+        int numChunks = Math.max(1, (samples.length - windowSize) / hopSize + 1);
+
+        BlockingQueue<AudioChunk> queue = new ArrayBlockingQueue<>(numWorkers * 4);
+        SharedResultMatrix resultMatrix = new SharedResultMatrix(windowSize / 2, numChunks);
+        AtomicInteger processedChunks = new AtomicInteger(0);
+
+        Thread producer = new Thread(
+                new WavProducerTask(samples, windowSize, hopSize, numChunks, numWorkers, queue),
+                "Producer-WavChunker");
+
+        ExecutorService workerPool = Executors.newFixedThreadPool(numWorkers);
+        for (int i = 0; i < numWorkers; i++) {
+            workerPool.submit(new FFTWorker(i, queue, resultMatrix, WindowFunction.Type.HANN, processedChunks));
+        }
+
+        producer.start();
+        producer.join();
+
+        workerPool.shutdown();
+        boolean finished = workerPool.awaitTermination(5, TimeUnit.MINUTES);
+        if (!finished) {
+            System.err.println("ADVERTENCIA: los workers no terminaron dentro del tiempo límite.");
+        }
+
+        return resultMatrix;
+    }
 }
+

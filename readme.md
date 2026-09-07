@@ -1,32 +1,39 @@
 # FFT Concurrente: Pipeline Distribuidor de Fourier
 
-Este proyecto implementa la **Transformada Rápida de Fourier (FFT)** en señales de audio `.wav` de forma concurrente, utilizando patrones de diseño de sistemas distribuidos y concurrentes en Java (Productor-Consumidor y Master-Worker).
+Este proyecto implementa la **Transformada Rápida de Fourier (FFT)** en señales de audio `.wav` de forma concurrente y distribuida, utilizando patrones de diseño de sistemas distribuidos en Java:
+1. **Productor-Consumidor** y **Master-Worker** para la concurrencia multihilo local.
+2. **Arquitectura Cliente-Servidor sobre Sockets TCP** con un protocolo binario determinista de alto rendimiento.
 
-El procesamiento paraleliza el cálculo de espectros de frecuencia (espectrogramas) dividiendo la señal de audio original en ventanas con solapamiento (*overlap*), aplicando una función de ventaneo (Hann), ejecutando la FFT y exportando los resultados a un formato estructurado en CSV.
+El procesamiento paraleliza el cálculo de espectros de frecuencia (espectrogramas) dividiendo la señal de audio original en ventanas con solapamiento (*overlap*), aplicando una función de ventaneo (Hann), ejecutando la FFT y exportando los resultados a formato CSV y consola.
 
 ---
 
-## 🛠️ Arquitectura y Patrones de Diseño
+## 🛠️ Arquitectura y Modos de Operación
 
-El sistema está estructurado mediante un pipeline de procesamiento concurrente:
+### 1. Modo Local (Pipeline Concurrente)
+- **Lectura de Audio**: Mono-hilo secuencial mediante `WavReader`.
+- **Productor (`WavProducerTask`)**: Trocea la señal y la encola en una `BlockingQueue` acotada (*backpressure*).
+- **Consumidores / Workers (`FFTWorker`)**: Pool de hilos (`ExecutorService`) que calcula FFT, magnitudes en dB y escribe concurrentemente en `SharedResultMatrix`.
 
-1. **Lectura de Audio (I/O Secuencial)**:
-   - Se realiza de forma secuencial y mono-hilo a través de `WavReader`, que decodifica y normaliza las muestras PCM del archivo `.wav`.
+### 2. Modo Distribuido (Cliente-Servidor TCP)
+Desacopla el pipeline en dos entidades de red mediante un protocolo binario directo sin sobrecarga de texto (usando `DataInputStream` y `DataOutputStream` con buffers de 64 KB):
 
-2. **Productor (`WavProducerTask`)**:
-   - Corre en su propio hilo dedicado (`Producer-WavChunker`).
-   - Se encarga de trocear la señal en ventanas de tamaño fijo ($N$, por defecto 1024) aplicando el desplazamiento especificado (*hop size*).
-   - Publica los fragmentos de audio (`AudioChunk`) en una cola bloqueante acotada (`BlockingQueue`). Esto proporciona control de flujo nativo (*backpressure*): si los hilos consumidores están saturados, el productor se bloquea hasta que haya espacio en la cola.
-   - Al finalizar, envía señales de apagado (*poison pills*) a los consumidores para iniciar el cierre ordenado del pipeline.
+```text
+[CLIENTE -> SERVIDOR]
+┌──────────────────┬─────────────────┬──────────────────┬────────────────────────┐
+│ windowSize (int) │ hopSize (int)   │ sampleCount (int)│ samples (sampleCount*8)│
+│     4 bytes      │     4 bytes     │     4 bytes      │      raw doubles       │
+└──────────────────┴─────────────────┴──────────────────┴────────────────────────┘
 
-3. **Consumidores / Workers (`FFTWorker`)**:
-   - Múltiples hilos concurrentes gestionados por un pool de hilos (`ExecutorService`).
-   - Consumen los fragmentos de la cola compartida.
-   - Procesan cada bloque de forma independiente y sin estado (*stateless*): aplican la función de ventaneo, calculan la FFT y obtienen la magnitud en decibelios (dB).
-   - Escriben de manera segura la columna de resultados en una matriz compartida (`SharedResultMatrix`).
+[SERVIDOR -> CLIENTE]
+┌──────────────────┬──────────────────┬──────────────────────────────────────────┐
+│ totalFrames (int)│ freqBins (int)   │ data (totalFrames * freqBins * 8 bytes)  │
+│     4 bytes      │     4 bytes      │            raw doubles (mag)             │
+└──────────────────┴──────────────────┴──────────────────────────────────────────┘
+```
 
-4. **Escritura y Exportación**:
-   - Una vez finalizado el cálculo concurrente, el orquestador exporta la matriz a un archivo CSV estructurado para su posterior análisis o graficación.
+- **Cliente (`FFTClient`)**: Lee el WAV local, empaqueta las muestras y configuración, las transmite al servidor por TCP, recibe la matriz del espectrograma, la exporta a CSV y genera una visualización ASCII en consola.
+- **Servidor (`FFTServer`)**: Acepta conexiones concurrentes, deserializa las muestras en memoria, ejecuta el pipeline multihilo de la FFT y devuelve la matriz calculada en binario.
 
 ---
 
@@ -35,16 +42,23 @@ El sistema está estructurado mediante un pipeline de procesamiento concurrente:
 ```text
 src/main/java/escom/chris/
 │
-├── Main.java                   # Punto de entrada y análisis de argumentos CLI
-├── FFTPipelineManager.java     # Orquestador del pipeline completo
+├── Main.java                   # Punto de entrada local
+├── FFTPipelineManager.java     # Orquestador del pipeline en memoria/disco
+├── BenchmarkRunner.java        # Ejecutor de pruebas de escalabilidad y métricas
+│
+├── client/
+│   └── FFTClient.java          # Cliente TCP: transmisión WAV y visualización
+│
+├── server/
+│   └── FFTServer.java          # Servidor TCP: ServerSocket y despacho de workers
 │
 ├── audio/
 │   ├── AudioChunk.java         # Modelo de datos para un bloque de audio
-│   └── WavReader.java          # Lector manual de la cabecera WAV
+│   └── WavReader.java          # Lector manual de cabecera WAV PCM
 │
 ├── concurrency/
 │   ├── FFTWorker.java          # Worker consumidor que ejecuta FFT
-│   ├── SharedResultMatrix.java # Matriz concurrente para resultados
+│   ├── SharedResultMatrix.java # Matriz compartida con streaming binario
 │   └── WavProducerTask.java    # Productor de chunks en cola
 │
 └── math/
@@ -60,10 +74,49 @@ src/main/java/escom/chris/
 ### Requisitos
 - **Java Development Kit (JDK) 21** o superior instalado.
 
-#### Parámetros:
-- `<archivo.wav>`: Ruta al archivo de audio de entrada (ej. `src/main/resources/audio.wav`).
-- `[numWorkers]` *(Opcional)*: Número de hilos consumidores concurrentes (por defecto: número de núcleos de la CPU).
-- `[windowSize]` *(Opcional)*: Tamaño de ventana para el procesamiento FFT (debe ser potencia de 2, por defecto: `1024`).
-- `[hopSize]` *(Opcional)*: Desplazamiento entre ventanas en muestras (por defecto: `windowSize / 2` para 50% de solapamiento).
-- `[salida.csv]` *(Opcional)*: Nombre del archivo de salida del espectrograma (por defecto: `spectrogram.csv`).
+### 1. Compilar todo el proyecto
+Desde la carpeta raíz del repositorio:
+```powershell
+javac -d target/classes src/main/java/escom/chris/*.java src/main/java/escom/chris/audio/*.java src/main/java/escom/chris/concurrency/*.java src/main/java/escom/chris/math/*.java src/main/java/escom/chris/server/*.java src/main/java/escom/chris/client/*.java
+```
 
+---
+
+### 2. Ejecutar en Modo Distribuido (Cliente-Servidor TCP)
+
+#### Paso 1: Iniciar el Servidor
+```powershell
+java -cp target/classes escom.chris.server.FFTServer [puerto] [numWorkers]
+```
+*Ejemplo (puerto 5000 con 8 workers):*
+```powershell
+java -cp target/classes escom.chris.server.FFTServer 5000 8
+```
+
+#### Paso 2: Ejecutar el Cliente
+```powershell
+java -cp target/classes escom.chris.client.FFTClient <host> <puerto> <archivo.wav> [windowSize] [hopSize] [salida.csv]
+```
+*Ejemplo:*
+```powershell
+java -cp target/classes escom.chris.client.FFTClient localhost 5000 src/main/resources/audio.wav 1024 512 client_spectrogram.csv
+```
+
+---
+
+### 3. Ejecutar en Modo Local (Pipeline Monolítico)
+```powershell
+java -cp target/classes escom.chris.Main <archivo.wav> [numWorkers] [windowSize] [hopSize] [salida.csv]
+```
+*Ejemplo:*
+```powershell
+java -cp target/classes escom.chris.Main "src/main/resources/audio.wav" 4 1024 512 "espectrograma.csv"
+```
+
+---
+
+### 4. Pruebas de Escalabilidad y Rendimiento
+Para replicar las pruebas de Speedup, Eficiencia y Overhead reportadas en [`Resultados.md`](Resultados.md):
+```powershell
+java -cp target/classes escom.chris.BenchmarkRunner "src/main/resources/audio.wav"
+```
