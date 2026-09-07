@@ -32,9 +32,9 @@ public final class FFTClient {
         int hopSize = args.length > 4 ? Integer.parseInt(args[4]) : windowSize / 2;
         String outputCsv = args.length > 5 ? args[5] : "client_spectrogram.csv";
 
-        System.out.println("==========================================================");
+        System.out.println();
         System.out.println("         CLIENTE FFT DISTRIBUIDO (Sockets TCP)            ");
-        System.out.println("==========================================================");
+        System.out.println();
         System.out.printf("Destino: %s:%d%n", host, port);
         System.out.printf("Audio: %s | Ventana: %d | Hop: %d%n%n", wavPath, windowSize, hopSize);
 
@@ -96,9 +96,9 @@ public final class FFTClient {
         }
 
         double totalMs = readMs + netTotalMs;
-        System.out.println("==========================================================");
+        System.out.println();
         System.out.printf("Proceso completado exitosamente. Tiempo total cliente: %.2f ms%n", totalMs);
-        System.out.println("==========================================================");
+        System.out.println();
     }
 }
 

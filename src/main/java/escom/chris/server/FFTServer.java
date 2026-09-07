@@ -26,9 +26,9 @@ public final class FFTServer {
         int port = args.length > 0 ? Integer.parseInt(args[0]) : 5000;
         int numWorkers = args.length > 1 ? Integer.parseInt(args[1]) : Runtime.getRuntime().availableProcessors();
 
-        System.out.println("==========================================================");
+        System.out.println();
         System.out.println("        SERVIDOR FFT CONCURRENTE (Sockets TCP)            ");
-        System.out.println("==========================================================");
+        System.out.println();
         System.out.printf("Puerto de escucha: %d%n", port);
         System.out.printf("Workers asignados por petición: %d%n", numWorkers);
         System.out.println("Esperando conexiones de clientes...\n");
@@ -55,7 +55,7 @@ public final class FFTServer {
 
             long tStart = System.nanoTime();
 
-            // 1. Deserializar flujo binario según el protocolo:
+            // Deserializar flujo binario según el protocolo:
             // [windowSize (int), hopSize (int), sampleCount (int), samples (double[])]
             int windowSize = dis.readInt();
             int hopSize = dis.readInt();
@@ -73,7 +73,7 @@ public final class FFTServer {
             double recvMs = (tReceived - tStart) / 1_000_000.0;
             System.out.printf("  [%s] Muestras recibidas en %.2f ms.%n", clientAddress, recvMs);
 
-            // 2. Ejecutar cálculo FFT concurrente
+            // Ejecutar cálculo FFT concurrente
             long tComputeStart = System.nanoTime();
             SharedResultMatrix resultMatrix = FFTPipelineManager.compute(samples, windowSize, hopSize, numWorkers);
             long tComputeEnd = System.nanoTime();
@@ -82,7 +82,7 @@ public final class FFTServer {
             System.out.printf("  [%s] Cómputo completado: %d frames x %d bins [%.2f ms]%n",
                     clientAddress, resultMatrix.getNumChunks(), resultMatrix.getNumBins(), computeMs);
 
-            // 3. Serializar y transmitir matriz resultante según el protocolo:
+            // Serializar y transmitir matriz resultante según el protocolo:
             // [totalFrames (int), freqBins (int), data (double[])]
             long tSendStart = System.nanoTime();
             resultMatrix.writeToBinaryStream(dos);
