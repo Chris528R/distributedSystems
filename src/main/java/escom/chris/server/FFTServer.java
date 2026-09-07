@@ -36,10 +36,8 @@ public final class FFTServer {
         ExecutorService clientHandlerPool = Executors.newCachedThreadPool();
 
         try (ServerSocket serverSocket = new ServerSocket(port)) {
-            while (true) {
-                Socket clientSocket = serverSocket.accept();
-                clientHandlerPool.submit(() -> handleClient(clientSocket, numWorkers));
-            }
+            Socket clientSocket = serverSocket.accept();
+            clientHandlerPool.submit(() -> handleClient(clientSocket, numWorkers));
         } catch (IOException e) {
             System.err.printf("[Servidor] Error crítico en ServerSocket: %s%n", e.getMessage());
         } finally {

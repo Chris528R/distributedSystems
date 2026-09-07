@@ -38,7 +38,7 @@ public final class FFTClient {
         System.out.printf("Destino: %s:%d%n", host, port);
         System.out.printf("Audio: %s | Ventana: %d | Hop: %d%n%n", wavPath, windowSize, hopSize);
 
-        // 1. Lectura del archivo WAV local
+        // Lectura del archivo WAV local
         long tReadStart = System.nanoTime();
         WavReader.WavData wav = new WavReader().read(wavPath);
         long tReadEnd = System.nanoTime();
@@ -46,7 +46,7 @@ public final class FFTClient {
         System.out.printf("[1/4] Audio leído: %d muestras, %d Hz, %d canal(es) [%.2f ms]%n",
                 wav.samples.length, wav.sampleRate, wav.channels, readMs);
 
-        // 2. Conexión y transmisión de muestras al servidor
+        // Conexión y transmisión de muestras al servidor
         System.out.printf("[2/4] Conectando a %s:%d... ", host, port);
         long tNetStart = System.nanoTime();
         SharedResultMatrix resultMatrix;
@@ -71,7 +71,7 @@ public final class FFTClient {
             System.out.printf("      Datos enviados: %d bytes en %.2f ms (%.1f MB/s)%n",
                     12 + wav.samples.length * 8, sendMs, (wav.samples.length * 8.0 / (1024 * 1024)) / (sendMs / 1000.0));
 
-            // 3. Recepción de la matriz del espectrograma
+            // Recepción de la matriz del espectrograma
             System.out.print("[3/4] Esperando cómputo del servidor y recibiendo espectrograma... ");
             long tRecvStart = System.nanoTime();
             resultMatrix = SharedResultMatrix.readFromBinaryStream(dis);
@@ -86,7 +86,7 @@ public final class FFTClient {
         System.out.printf("      Dimensiones recibidas: %d frames temporales x %d bins de frecuencia%n%n",
                 resultMatrix.getNumChunks(), resultMatrix.getNumBins());
 
-        // 4. Exportación a archivo CSV
+        // Exportación a archivo CSV
         if (outputCsv != null && !outputCsv.isEmpty()) {
             long tExportStart = System.nanoTime();
             resultMatrix.exportToCsv(outputCsv);
@@ -95,67 +95,10 @@ public final class FFTClient {
             System.out.printf("[4/4] Espectrograma exportado a '%s' [%.2f ms]%n%n", outputCsv, exportMs);
         }
 
-        // 5. Renderizado visual en consola (Vista previa ASCII del espectrograma)
-        renderAsciiSpectrogram(resultMatrix, wav.sampleRate, 12, 50);
-
         double totalMs = readMs + netTotalMs;
         System.out.println("==========================================================");
         System.out.printf("Proceso completado exitosamente. Tiempo total cliente: %.2f ms%n", totalMs);
         System.out.println("==========================================================");
-    }
-
-    /**
-     * Renderiza una vista previa del espectrograma en consola usando caracteres ASCII/Unicode.
-     * Muestra frecuencias altas arriba y bajas abajo, con escala de intensidad en dB.
-     */
-    private static void renderAsciiSpectrogram(SharedResultMatrix matrix, int sampleRate, int displayRows, int displayCols) {
-        int totalBins = matrix.getNumBins();
-        int totalFrames = matrix.getNumChunks();
-
-        char[] intensityScale = {' ', '.', ':', '-', '=', '#', '@'};
-        double minDb = -80.0;
-        double maxDb = 0.0;
-
-        System.out.println("--- RENDERIZADO VISUAL DEL ESPECTROGRAMA RECIBIDO ---");
-        System.out.printf("Frecuencia (Hz) | Tiempo transcurrido -> (%d frames totales)%n", totalFrames);
-        System.out.println("----------------+---------------------------------------------------");
-
-        // Recorrer filas desde altas frecuencias hasta bajas frecuencias
-        for (int r = displayRows - 1; r >= 0; r--) {
-            int binStart = r * totalBins / displayRows;
-            int binEnd = Math.min(totalBins, (r + 1) * totalBins / displayRows);
-            double centerFreq = ((binStart + binEnd) / 2.0) * (sampleRate / 2.0) / totalBins;
-
-            System.out.printf("%6.0f Hz | ", centerFreq);
-
-            for (int c = 0; c < displayCols; c++) {
-                int frameStart = c * totalFrames / displayCols;
-                int frameEnd = Math.min(totalFrames, (c + 1) * totalFrames / displayCols);
-
-                // Promedio de magnitud en el bloque visual
-                double sum = 0.0;
-                int count = 0;
-                for (int b = binStart; b < binEnd; b++) {
-                    for (int f = frameStart; f < frameEnd; f++) {
-                        sum += matrix.get(b, f);
-                        count++;
-                    }
-                }
-                double avgDb = count > 0 ? sum / count : minDb;
-
-                // Mapeo de [minDb, maxDb] a índice de escala de intensidad
-                double norm = (avgDb - minDb) / (maxDb - minDb);
-                norm = Math.max(0.0, Math.min(1.0, norm));
-                int charIdx = (int) (norm * (intensityScale.length - 1));
-
-                System.out.print(intensityScale[charIdx]);
-            }
-            System.out.println();
-        }
-
-        System.out.println("----------------+---------------------------------------------------");
-        System.out.println("Escala de dB:   [Silencio/Bajo: ' ']  .  :  -  =  #  @  [Intenso/Alto]");
-        System.out.println();
     }
 }
 
