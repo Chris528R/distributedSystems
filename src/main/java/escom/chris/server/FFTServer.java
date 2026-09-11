@@ -33,15 +33,11 @@ public final class FFTServer {
         System.out.printf("Workers asignados por petición: %d%n", numWorkers);
         System.out.println("Esperando conexiones de clientes...\n");
 
-        ExecutorService clientHandlerPool = Executors.newCachedThreadPool();
-
         try (ServerSocket serverSocket = new ServerSocket(port)) {
             Socket clientSocket = serverSocket.accept();
-            clientHandlerPool.submit(() -> handleClient(clientSocket, numWorkers));
+            handleClient(clientSocket, numWorkers);
         } catch (IOException e) {
             System.err.printf("[Servidor] Error crítico en ServerSocket: %s%n", e.getMessage());
-        } finally {
-            clientHandlerPool.shutdown();
         }
     }
 
