@@ -3,6 +3,7 @@
 Este proyecto implementa la **Transformada Rápida de Fourier (FFT)** en señales de audio `.wav` de forma concurrente y distribuida, utilizando patrones de diseño de sistemas distribuidos en Java:
 1. **Productor-Consumidor** y **Master-Worker** para la concurrencia multihilo local.
 2. **Arquitectura Cliente-Servidor sobre Sockets TCP** con un protocolo binario determinista de alto rendimiento.
+3. **Arquitectura Clúster Scatter-Gather con Load Balancer / Broker** para distribuir el cálculo entre $K$ servidores backend ante $C$ clientes simultáneos.
 
 El procesamiento paraleliza el cálculo de espectros de frecuencia (espectrogramas) dividiendo la señal de audio original en ventanas con solapamiento (*overlap*), aplicando una función de ventaneo (Hann), ejecutando la FFT y exportando los resultados a formato CSV y consola.
 
@@ -33,40 +34,32 @@ Desacopla el pipeline en dos entidades de red mediante un protocolo binario dire
 ```
 
 - **Cliente (`FFTClient`)**: Lee el WAV local, empaqueta las muestras y configuración, las transmite al servidor por TCP, recibe la matriz del espectrograma y la exporta a CSV.
-- **Servidor simple (`FFTServer`)**: Atiende una petición con pool FFT local por conexión (modo de referencia).
-- **Servidor multicliiente (`MultiClientServer`)**: Arquitectura desacoplada en dos etapas (ver sección 3).
+- **Servidor simple (`FFTServer`)**: Atiende una petición con pool FFT local por conexión.
 
-### 3. Modo Multicliiente (I/O Pool + Global Compute Pool)
-Optimiza el uso de hilos con varios clientes simultáneos: el I/O y el cómputo FFT dejan de crear pools por conexión.
+### 3. Modo Clúster Scatter-Gather (Load Balancer / Broker + N-Servidores)
+Permite escalar horizontalmente distribuyendo las ventanas de tiempo entre múltiples servidores de cómputo:
 
 ```text
-Clientes Conectados (C1, C2, ..., Cn)
-         │        │        │
-         ▼        ▼        ▼
-┌─────────────────────────────────────────┐
-│     I/O Connection Pool (ServerSocket)  │  Acepta peticiones y lee audio
-└────────────────────┬────────────────────┘
-                     │ Chunks de audio de todos los clientes
-                     ▼
-┌─────────────────────────────────────────┐
-│    Global Blocking Queue                │  Buffer desacoplador
-└────────────────────┬────────────────────┘
-                     │
-       ┌─────────────┼─────────────┐
-       ▼             ▼             ▼
- [ FFT Worker 1 ] [ FFT Worker 2 ] [ FFT Worker N ]  Worker Pool Global Fijo
-       │             │             │
-       └─────────────┼─────────────┘
-                     ▼
-┌─────────────────────────────────────────┐
-│    Respuestas despachadas por socket    │  Envío vía Future / CountDownLatch
-└─────────────────────────────────────────┘
+  [ Cliente 1 ]    [ Cliente 2 ] ... [ Cliente C ]
+        │                │                 │
+        └────────────────┼─────────────────┘
+                         ▼ (TCP: 5000)
+        ┌──────────────────────────────────┐
+        │     LOAD BALANCER / BROKER       │
+        │  - Registro de Servidores Activos│
+        │  - Particionado Scatter          │
+        │  - Ensamblaje Gather             │
+        └────────────────┬─────────────────┘
+                         │ (TCP Interno)
+         ┌───────────────┼───────────────┐
+         ▼               ▼               ▼
+  [ Servidor FFT 1] [ Servidor FFT 2] [ Servidor FFT K]
+   (localhost:5001)  (localhost:5002)  (localhost:5003)
 ```
 
-- **I/O Connection Pool** (`MultiClientServer`): pool fijo ligero (p. ej. 4–8 hilos) que solo lee sockets y escribe respuestas.
-- **`ClienteTaskHandler`**: mantiene el socket abierto; en lugar de un pool FFT propio, envía chunks al `GlobalFftWorkerPool` y sincroniza con `CountDownLatch` + `Future`.
-- **`GlobalFftWorkerPool`**: único pool de tamaño fijo acotado a los núcleos lógicos, compartido por todos los clientes.
-- **`ClienteSimulator`**: dispara C clientes simultáneos (`C = {1,2,4,8,16,32}`) y mide latencia promedio, throughput y tasa de rechazo.
+- **Broker (`FFTLoadBalancer`)**: Divide los frames entre los $K$ servidores (**Scatter**), recolecta los resultados en paralelo (**Gather**) y los devuelve al cliente.
+- **Nodos Backend (`WorkerNodeServer`)**: Procesan su porción asignada con pools de hilos locales y devuelven las magnitudes calculadas.
+- **Simulador de Clúster (`ClusterBenchmarkRunner`)**: Evalúa el clúster con $K \in \{1,2,4\}$ y $C \in \{16,32\}$.
 
 ---
 
@@ -77,24 +70,23 @@ src/main/java/escom/chris/
 │
 ├── Main.java                   # Punto de entrada local
 ├── FFTPipelineManager.java     # Orquestador del pipeline en memoria/disco
-├── BenchmarkRunner.java        # Ejecutor de pruebas de escalabilidad y métricas
+├── BenchmarkRunner.java        # Ejecutor de pruebas de escalabilidad mono-nodo
 │
 ├── client/
-│   ├── FFTClient.java          # Cliente TCP: transmisión WAV y exportación CSV
-│   └── ClienteSimulator.java   # Carga concurrente C={1..32}: latencia/throughput/rechazo
+│   └── FFTClient.java          # Cliente TCP: transmisión WAV y visualización
 │
 ├── server/
-│   ├── FFTServer.java          # Servidor TCP simple (una petición / pool local)
-│   ├── MultiClientServer.java  # Despachador: I/O pool + compute pool global
-│   └── ClienteTaskHandler.java # Handler por cliente → chunks al pool compartido
+│   ├── FFTServer.java          # Servidor TCP monolítico
+│   ├── FFTLoadBalancer.java    # Broker / Load Balancer Scatter-Gather
+│   ├── WorkerNodeServer.java   # Servidor Worker backend para clúster
+│   └── ClusterBenchmarkRunner.java # Benchmark de escalabilidad horizontal
 │
 ├── audio/
 │   ├── AudioChunk.java         # Modelo de datos para un bloque de audio
 │   └── WavReader.java          # Lector manual de cabecera WAV PCM
 │
 ├── concurrency/
-│   ├── FFTWorker.java          # Worker consumidor (modo local / pipeline clásico)
-│   ├── GlobalFftWorkerPool.java# Pool FFT global compartido (modo multicliiente)
+│   ├── FFTWorker.java          # Worker consumidor que ejecuta FFT
 │   ├── SharedResultMatrix.java # Matriz compartida con streaming binario
 │   └── WavProducerTask.java    # Productor de chunks en cola
 │
@@ -112,68 +104,42 @@ src/main/java/escom/chris/
 - **Java Development Kit (JDK) 21** o superior instalado.
 
 ### 1. Compilar todo el proyecto
-Desde la carpeta raíz del repositorio:
 ```powershell
 javac -d target/classes src/main/java/escom/chris/*.java src/main/java/escom/chris/audio/*.java src/main/java/escom/chris/concurrency/*.java src/main/java/escom/chris/math/*.java src/main/java/escom/chris/server/*.java src/main/java/escom/chris/client/*.java
 ```
 
 ---
 
-### 2. Ejecutar en Modo Distribuido (Cliente-Servidor TCP)
+### 2. Ejecutar en Modo Clúster Scatter-Gather (Broker + N-Workers)
 
-#### Opción A — Servidor simple (una conexión / pool local)
+#### Paso 1: Iniciar los Servidores Workers
+En terminales independientes:
 ```powershell
-java -cp target/classes escom.chris.server.FFTServer [puerto] [numWorkers]
-```
-*Ejemplo:*
-```powershell
-java -cp target/classes escom.chris.server.FFTServer 5000 8
+java -cp target/classes escom.chris.server.WorkerNodeServer 5001 4
+java -cp target/classes escom.chris.server.WorkerNodeServer 5002 4
 ```
 
-#### Opción B — Servidor multicliiente (recomendado)
+#### Paso 2: Iniciar el Load Balancer / Broker
 ```powershell
-java -cp target/classes escom.chris.server.MultiClientServer [puerto] [ioPoolSize] [computePoolSize] [backlog]
-```
-*Ejemplo (puerto 5000, 8 hilos I/O, compute = núcleos lógicos, backlog 50):*
-```powershell
-java -cp target/classes escom.chris.server.MultiClientServer 5000 8 8 50
+java -cp target/classes escom.chris.server.FFTLoadBalancer 5000 localhost:5001 localhost:5002
 ```
 
-#### Cliente único
+#### Paso 3: Conectar el Cliente
 ```powershell
-java -cp target/classes escom.chris.client.FFTClient <host> <puerto> <archivo.wav> [windowSize] [hopSize] [salida.csv]
+java -cp target/classes escom.chris.client.FFTClient localhost 5000 src/main/resources/audio.wav 1024 512 cluster_output.csv
 ```
-*Ejemplo:*
-```powershell
-java -cp target/classes escom.chris.client.FFTClient localhost 5000 src/main/resources/audio.wav 1024 512 client_spectrogram.csv
-```
-
-#### Simulador de escalabilidad multicliiente
-Con el `MultiClientServer` en marcha:
-```powershell
-java -cp target/classes escom.chris.client.ClienteSimulator <host> <puerto> <archivo.wav> [windowSize] [hopSize]
-```
-*Ejemplo:*
-```powershell
-java -cp target/classes escom.chris.client.ClienteSimulator localhost 5000 src/main/resources/audio.wav 1024 512
-```
-Reporta por cada `C ∈ {1,2,4,8,16,32}`: latencia promedio por cliente, throughput (req/s) y tasa de rechazo (%).
 
 ---
 
-### 3. Ejecutar en Modo Local (Pipeline Monolítico)
+### 3. Pruebas Automatizadas de Escalabilidad Horizontal
+Para ejecutar el experimento con $K \in \{1,2,4\}$ servidores y $C \in \{16,32\}$ clientes concurrentes reportado en [`Resultados_Cluster.md`](Resultados_Cluster.md):
 ```powershell
-java -cp target/classes escom.chris.Main <archivo.wav> [numWorkers] [windowSize] [hopSize] [salida.csv]
+java -cp target/classes escom.chris.server.ClusterBenchmarkRunner "src/main/resources/audio.wav"
 ```
-*Ejemplo:*
+
+---
+
+### 4. Modo Local (Pipeline Monolítico)
 ```powershell
 java -cp target/classes escom.chris.Main "src/main/resources/audio.wav" 4 1024 512 "espectrograma.csv"
-```
-
----
-
-### 4. Pruebas de Escalabilidad y Rendimiento
-Para replicar las pruebas de Speedup, Eficiencia y Overhead reportadas en [`Resultados.md`](Resultados.md):
-```powershell
-java -cp target/classes escom.chris.BenchmarkRunner "src/main/resources/audio.wav"
 ```
