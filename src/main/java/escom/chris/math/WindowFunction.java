@@ -21,6 +21,10 @@ public final class WindowFunction {
         }
     }
 
+    public static double[] applyHann(double[] samples) {
+        return hann(samples);
+    }
+
     public static double[] hann(double[] samples) {
         int n = samples.length;
         double[] out = new double[n];

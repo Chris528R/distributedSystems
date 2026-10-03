@@ -31,6 +31,10 @@ public final class WavReader {
         }
     }
 
+    public static double[] readMonoPcm(String path) throws IOException {
+        return new WavReader().read(path).samples;
+    }
+
     public WavData read(String path) throws IOException {
         try (InputStream rawIn = new BufferedInputStream(new FileInputStream(path))) {
             byte[] header = readNBytes(rawIn, 12);

@@ -45,6 +45,10 @@ public final class Complex {
         return Math.sqrt(re * re + im * im);
     }
 
+    public double abs() {
+        return magnitude();
+    }
+
     /** Magnitud en decibelios, con piso mínimo para evitar log(0). */
     public double magnitudeDb() {
         return 20.0 * Math.log10(magnitude() + 1e-12);
