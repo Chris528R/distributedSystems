@@ -116,7 +116,7 @@ public final class FFTPipelineManager {
 
     /**
      * Ejecuta el pipeline concurrente de cálculo FFT sobre un arreglo de muestras en memoria.
-     * Utilizado directamente por el servidor TCP al recibir el flujo binario.
+     * Utilizado por el servidor REST al recibir las muestras en la petición.
      */
     public static SharedResultMatrix compute(double[] samples, int windowSize, int hopSize, int numWorkers) throws Exception {
         int numChunks = Math.max(1, (samples.length - windowSize) / hopSize + 1);

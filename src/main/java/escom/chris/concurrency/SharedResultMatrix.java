@@ -82,40 +82,21 @@ public final class SharedResultMatrix {
     }
 
     /**
-     * Serializa la matriz según el protocolo binario TCP:
-     * totalFrames (int), freqBins (int), data (totalFrames * freqBins * 8 bytes de doubles).
+     * Copia la matriz como [frame][bin], el layout que serializa la API REST.
      */
-    public void writeToBinaryStream(java.io.DataOutputStream dos) throws IOException {
+    public double[][] copyAsFrameMajor() {
         lock.readLock().lock();
         try {
-            dos.writeInt(numChunks);
-            dos.writeInt(numBins);
-            for (int f = 0; f < numChunks; f++) {
-                for (int b = 0; b < numBins; b++) {
-                    dos.writeDouble(matrix[b][f]);
+            double[][] copy = new double[numChunks][numBins];
+            for (int frame = 0; frame < numChunks; frame++) {
+                for (int bin = 0; bin < numBins; bin++) {
+                    copy[frame][bin] = matrix[bin][frame];
                 }
             }
-            dos.flush();
+            return copy;
         } finally {
             lock.readLock().unlock();
         }
-    }
-
-    /**
-     * Deserializa una matriz de espectrograma recibida desde un DataInputStream.
-     */
-    public static SharedResultMatrix readFromBinaryStream(java.io.DataInputStream dis) throws IOException {
-        int totalFrames = dis.readInt();
-        int freqBins = dis.readInt();
-        SharedResultMatrix result = new SharedResultMatrix(freqBins, totalFrames);
-        for (int f = 0; f < totalFrames; f++) {
-            double[] col = new double[freqBins];
-            for (int b = 0; b < freqBins; b++) {
-                col[b] = dis.readDouble();
-            }
-            result.setColumn(f, col);
-        }
-        return result;
     }
 }
 
