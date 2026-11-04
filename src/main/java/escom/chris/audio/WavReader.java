@@ -36,47 +36,58 @@ public final class WavReader {
     }
 
     public WavData read(String path) throws IOException {
-        try (InputStream rawIn = new BufferedInputStream(new FileInputStream(path))) {
-            byte[] header = readNBytes(rawIn, 12);
-            requireTag(header, 0, "RIFF");
-            requireTag(header, 8, "WAVE");
-
-            int sampleRate = 0, channels = 0, bitsPerSample = 0;
-            byte[] pcmData = null;
-
-            while (true) {
-                byte[] chunkHeader = readNBytesOrNull(rawIn, 8);
-                if (chunkHeader == null) break; // EOF
-
-                String chunkId = new String(chunkHeader, 0, 4, "US-ASCII");
-                int chunkSize = ByteBuffer.wrap(chunkHeader, 4, 4)
-                        .order(ByteOrder.LITTLE_ENDIAN).getInt();
-
-                if (chunkId.equals("fmt ")) {
-                    byte[] fmt = readNBytes(rawIn, chunkSize);
-                    ByteBuffer bb = ByteBuffer.wrap(fmt).order(ByteOrder.LITTLE_ENDIAN);
-                    bb.getShort();                 // audioFormat (1 = PCM)
-                    channels = bb.getShort();
-                    sampleRate = bb.getInt();
-                    bb.getInt();                   // byteRate
-                    bb.getShort();                 // blockAlign
-                    bitsPerSample = bb.getShort();
-                } else if (chunkId.equals("data")) {
-                    pcmData = readNBytes(rawIn, chunkSize);
-                } else {
-                    // Subchunk irrelevante (p.ej. "LIST"): se descarta.
-                    skipNBytes(rawIn, chunkSize);
-                }
-                if (chunkSize % 2 == 1) rawIn.skip(1); // padding a byte par
-            }
-
-            if (pcmData == null || sampleRate == 0) {
-                throw new IOException("Archivo WAV inválido o incompleto: " + path);
-            }
-
-            double[] samples = decodePcm(pcmData, channels, bitsPerSample);
-            return new WavData(samples, sampleRate, channels, bitsPerSample);
+        try (InputStream in = new FileInputStream(path)) {
+            return read(in, path);
         }
+    }
+
+    /**
+     * Parsea un WAV desde cualquier flujo (p.ej. un archivo subido por HTTP).
+     * El flujo no se cierra: es responsabilidad del llamador.
+     *
+     * @param sourceName nombre usado solo en los mensajes de error
+     */
+    public WavData read(InputStream in, String sourceName) throws IOException {
+        InputStream rawIn = new BufferedInputStream(in);
+        byte[] header = readNBytes(rawIn, 12);
+        requireTag(header, 0, "RIFF");
+        requireTag(header, 8, "WAVE");
+
+        int sampleRate = 0, channels = 0, bitsPerSample = 0;
+        byte[] pcmData = null;
+
+        while (true) {
+            byte[] chunkHeader = readNBytesOrNull(rawIn, 8);
+            if (chunkHeader == null) break; // EOF
+
+            String chunkId = new String(chunkHeader, 0, 4, "US-ASCII");
+            int chunkSize = ByteBuffer.wrap(chunkHeader, 4, 4)
+                    .order(ByteOrder.LITTLE_ENDIAN).getInt();
+
+            if (chunkId.equals("fmt ")) {
+                byte[] fmt = readNBytes(rawIn, chunkSize);
+                ByteBuffer bb = ByteBuffer.wrap(fmt).order(ByteOrder.LITTLE_ENDIAN);
+                bb.getShort();                 // audioFormat (1 = PCM)
+                channels = bb.getShort();
+                sampleRate = bb.getInt();
+                bb.getInt();                   // byteRate
+                bb.getShort();                 // blockAlign
+                bitsPerSample = bb.getShort();
+            } else if (chunkId.equals("data")) {
+                pcmData = readNBytes(rawIn, chunkSize);
+            } else {
+                // Subchunk irrelevante (p.ej. "LIST"): se descarta.
+                skipNBytes(rawIn, chunkSize);
+            }
+            if (chunkSize % 2 == 1) rawIn.skip(1); // padding a byte par
+        }
+
+        if (pcmData == null || sampleRate == 0) {
+            throw new IOException("Archivo WAV inválido o incompleto: " + sourceName);
+        }
+
+        double[] samples = decodePcm(pcmData, channels, bitsPerSample);
+        return new WavData(samples, sampleRate, channels, bitsPerSample);
     }
 
     private double[] decodePcm(byte[] pcmData, int channels, int bitsPerSample) {

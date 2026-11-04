@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DistriFourier PWA</title>
+  <meta name="description" content="Visualizador de espectrogramas calculados por el backend distribuido de FFT">
+  <meta name="theme-color" content="#0b0f17">
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <img src="icons/icon.svg" alt="" width="28" height="28">
+      <h1>DistriFourier</h1>
+      <span class="tag">FFT · Spectrogram</span>
+    </div>
+    <div class="topbar-right">
+      <span id="net-status" class="pill" title="Estado de la red">online</span>
+      <button id="install-btn" class="btn btn-ghost" hidden>Instalar app</button>
+    </div>
+  </header>
+
+  <main class="layout">
+    <!-- Panel izquierdo: entrada y parámetros -->
+    <aside class="panel controls">
+      <form id="fft-form" novalidate>
+        <section>
+          <h2 class="panel-title">Audio</h2>
+          <label id="dropzone" class="dropzone" for="file-input">
+            <input id="file-input" type="file" accept=".wav,audio/wav,audio/x-wav" hidden>
+            <span class="dz-icon" aria-hidden="true">⇪</span>
+            <span class="dz-main">Arrastra un archivo <b>.wav</b></span>
+            <span class="dz-sub">o haz clic para seleccionarlo</span>
+          </label>
+          <p id="file-info" class="file-info" hidden></p>
+        </section>
+
+        <section>
+          <h2 class="panel-title">Parámetros STFT</h2>
+          <div class="field">
+            <label for="window-size">windowSize</label>
+            <select id="window-size">
+              <option>256</option>
+              <option>512</option>
+              <option selected>1024</option>
+              <option>2048</option>
+              <option>4096</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="hop-size">hopSize</label>
+            <input id="hop-size" type="number" min="1" max="1024" step="1" value="512">
+          </div>
+          <div class="field">
+            <label for="api-url">Backend</label>
+            <input id="api-url" type="url" spellcheck="false" value="http://localhost:8080">
+          </div>
+        </section>
+
+        <button id="submit-btn" class="btn btn-primary" type="submit" disabled>Calcular espectrograma</button>
+
+        <div id="progress" class="progress" hidden>
+          <div class="progress-track"><div id="progress-bar" class="progress-bar"></div></div>
+          <p id="progress-label" class="progress-label">Subiendo…</p>
+        </div>
+        <p id="error-msg" class="error" role="alert" hidden></p>
+      </form>
+
+      <section>
+        <h2 class="panel-title">Historial local <span class="muted">(últimos 3)</span></h2>
+        <ul id="history" class="history"></ul>
+        <p id="history-empty" class="muted small">Aún no hay espectrogramas guardados.</p>
+      </section>
+    </aside>
+
+    <!-- Panel principal: visualización -->
+    <section class="panel viewer">
+      <div class="viewer-head">
+        <h2 id="viewer-title" class="panel-title">Espectrograma</h2>
+        <dl id="stats" class="stats"></dl>
+      </div>
+      <div id="canvas-wrap" class="canvas-wrap">
+        <canvas id="spectrogram" aria-label="Espectrograma: tiempo en el eje X, frecuencia en el eje Y"></canvas>
+        <canvas id="overlay" aria-hidden="true"></canvas>
+        <div id="tooltip" class="tooltip" hidden></div>
+        <div id="placeholder" class="placeholder">
+          <p>Sube un archivo WAV para calcular su espectrograma<br>o abre uno del historial.</p>
+        </div>
+      </div>
+      <div class="legend">
+        <span class="muted small" id="legend-min">−80 dB</span>
+        <canvas id="colorbar" width="256" height="10"></canvas>
+        <span class="muted small" id="legend-max">0 dB</span>
+        <label class="small range-label">Rango dinámico
+          <input id="db-range" type="range" min="30" max="120" step="10" value="80">
+        </label>
+      </div>
+    </section>
+  </main>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>

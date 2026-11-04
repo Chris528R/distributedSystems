@@ -64,6 +64,25 @@ Si `windowSize` u `hopSize` se omiten, el servidor usa `1024` y `windowSize / 2`
 
 `magnitudes` usa layout **`[frame][bin]`**.
 
+**Variante multipart (la usa la PWA)**: el mismo endpoint acepta `multipart/form-data` con el `.wav` crudo (campo `file`) y los parámetros `windowSize` / `hopSize`. El servidor decodifica el WAV con `WavReader`, por lo que la respuesta incluye además `sampleRate`, `windowSize` y `hopSize`. Las magnitudes vienen en **dB**.
+
+```bash
+curl -F file=@src/main/resources/audio.wav -F windowSize=1024 -F hopSize=512 \
+     http://localhost:8080/api/fft/spectrogram
+```
+
+CORS está habilitado en `/api/**` para los orígenes de `app.cors.allowed-origins` (por defecto `http://localhost:*` y `http://127.0.0.1:*`).
+
+### 3. Cliente web (PWA)
+
+`frontend/` contiene una Progressive Web App en HTML/CSS/JS modular, sin dependencias ni paso de compilación:
+
+- Carga de `.wav` por drag & drop o selector, con `windowSize` / `hopSize` configurables.
+- Barra de progreso en tres fases: subida → cálculo en backend → descarga de la matriz.
+- Espectrograma en `<canvas>` (paleta tipo *inferno*), ejes de tiempo/frecuencia, cursor con tooltip (t, f, dB) y control de rango dinámico.
+- Historial de los últimos 3 espectrogramas en IndexedDB, consultable sin red.
+- `manifest.json` + `sw.js` (caché del App Shell) para instalarla y abrirla offline.
+
 ---
 
 ## Estructura del proyecto
@@ -77,6 +96,7 @@ src/main/java/escom/chris/
 ├── api/
 │   ├── FftController.java          # POST /api/fft/spectrogram
 │   ├── FftComputeService.java      # Valida y llama al pipeline
+│   ├── CorsConfig.java             # CORS para la PWA
 │   └── dto/
 │       ├── SpectrogramRequest.java
 │       └── SpectrogramResponse.java
@@ -143,7 +163,18 @@ mvn -q exec:java "-Dexec.mainClass=escom.chris.Main" "-Dexec.args=src/main/resou
 
 Uso: `Main <archivo.wav> [numWorkers] [windowSize] [hopSize] [salida.csv]`.
 
-### 4. Benchmark de hilos (local)
+### 4. PWA
+
+Con el servidor REST corriendo, sirve `frontend/` con cualquier servidor estático en `localhost` (los Service Workers exigen `localhost` o HTTPS):
+
+```bash
+cd frontend
+python3 -m http.server 5173     # o: npx serve -l 5173
+```
+
+Abre `http://localhost:5173`. La URL del backend se puede cambiar desde el panel lateral. Si sirves la PWA desde otro origen, agrégalo a `app.cors.allowed-origins`. Al modificar archivos del frontend, incrementa `CACHE_VERSION` en `sw.js` para que los clientes instalados reciban la versión nueva.
+
+### 5. Benchmark de hilos (local)
 
 ```bash
 mvn -q exec:java "-Dexec.mainClass=escom.chris.BenchmarkRunner" "-Dexec.args=src/main/resources/audio.wav"
