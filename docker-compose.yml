@@ -1,0 +1,124 @@
+services:
+  # ---------------------------------------------------------------------------
+  # Almacenamiento de Objetos S3 Local (Archivos .WAV brutos)
+  # ---------------------------------------------------------------------------
+  minio:
+    image: adobe/s3mock:latest
+    container_name: distrifourier-minio
+    environment:
+      COM_ADOBE_TESTING_S3MOCK_STORE_INITIAL_BUCKETS: distrifourier-wavs
+    ports:
+      - "9000:9090"
+
+  # ---------------------------------------------------------------------------
+  # Base de datos relacional para persistencia de espectrogramas e historial
+  # ---------------------------------------------------------------------------
+  db:
+    image: postgres:16-alpine
+    container_name: distrifourier-db
+    environment:
+      POSTGRES_DB: fft_db
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user -d fft_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ---------------------------------------------------------------------------
+  # 3. Instancias escalables de Cómputo FFT (Stateless Workers)
+  # Escalable dinámicamente con: docker compose up -d --scale worker-fft=4
+  # ---------------------------------------------------------------------------
+  worker-fft:
+    build:
+      context: .
+      dockerfile: service-worker-fft/Dockerfile
+    environment:
+      - SERVER_PORT=8082
+    expose:
+      - "8082"
+    deploy:
+      replicas: 2
+
+  # ---------------------------------------------------------------------------
+  # 4. Servicio de Almacenamiento e Historial de Espectrogramas (:8085)
+  # ---------------------------------------------------------------------------
+  storage-service:
+    build:
+      context: .
+      dockerfile: service-storage/Dockerfile
+    container_name: distrifourier-storage
+    environment:
+      - SERVER_PORT=8085
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://db:5432/fft_db
+      - SPRING_DATASOURCE_USERNAME=user
+      - SPRING_DATASOURCE_PASSWORD=password
+    ports:
+      - "8085:8085"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # ---------------------------------------------------------------------------
+  # 2. Servicio de Ingesta de Audio y Orquestador Scatter-Gather (:8081)
+  # ---------------------------------------------------------------------------
+  ingestion-service:
+    build:
+      context: .
+      dockerfile: service-ingestion/Dockerfile
+    container_name: distrifourier-ingestion
+    environment:
+      - SERVER_PORT=8081
+      - WORKER_URLS=http://worker-fft:8082
+      - STORAGE_SERVICE_URL=http://storage-service:8085
+      - MINIO_ENABLED=true
+      - MINIO_ENDPOINT=http://minio:9090
+      - MINIO_ACCESS_KEY=minioadmin
+      - MINIO_SECRET_KEY=minioadmin
+      - MINIO_BUCKET=distrifourier-wavs
+    ports:
+      - "8081:8081"
+    depends_on:
+      - minio
+      - worker-fft
+      - storage-service
+
+  # ---------------------------------------------------------------------------
+  # 1. API Gateway (Punto único de entrada para la PWA :8080)
+  # ---------------------------------------------------------------------------
+  gateway:
+    build:
+      context: .
+      dockerfile: api-gateway/Dockerfile
+    container_name: distrifourier-gateway
+    environment:
+      - SERVER_PORT=8080
+      - INGESTION_SERVICE_URL=http://ingestion-service:8081
+      - STORAGE_SERVICE_URL=http://storage-service:8085
+      - CORS_ALLOWED_ORIGINS=http://localhost:*,http://127.0.0.1:*
+    ports:
+      - "8080:8080"
+    depends_on:
+      - ingestion-service
+      - storage-service
+      - worker-fft
+
+  # ---------------------------------------------------------------------------
+  # Servidor Web Nginx para la PWA (:3000 -> :80)
+  # ---------------------------------------------------------------------------
+  pwa-frontend:
+    build: ./frontend-pwa
+    container_name: distrifourier-pwa
+    ports:
+      - "3000:80"
+    depends_on:
+      - gateway
+
+volumes:
+  minio_data:
+  pg_data:

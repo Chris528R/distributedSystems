@@ -1,183 +1,177 @@
-# FFT Concurrente: Pipeline de Fourier sobre API REST
+# DistriFourier: Espectrogramas FFT sobre Arquitectura de Microservicios y PWA
 
-Este proyecto implementa la **Transformada Rápida de Fourier (FFT)** sobre señales de audio `.wav` de forma concurrente. El cómputo se expone como **API REST con Spring Boot**; un cliente Java lee el WAV en local y envía las muestras por HTTP (`java.net.http.HttpClient`).
-
-El procesamiento paraleliza espectros de frecuencia (espectrogramas) dividiendo la señal en ventanas con solapamiento (*overlap*), aplicando una ventana Hann, ejecutando la FFT y devolviendo la matriz de magnitudes.
-
-Las versiones anteriores (sockets TCP, clúster Scatter-Gather y Java RMI) quedan en el historial de Git; el transporte actual es únicamente REST/JSON.
+Este proyecto implementa el cálculo distribuido y concurrente de la **Transformada Rápida de Fourier (FFT)** sobre señales de audio `.wav` desacoplado en **4 microservicios funcionales** con **Java 21 y Spring Boot 3.4.4**, consumidos por una **Progressive Web App (PWA)** instalable y con soporte offline.
 
 ---
 
-## Arquitectura y modos de operación
+## 1. Descomposición por Dominios (Domain-Driven Decomposition)
 
-### 1. Pipeline concurrente (núcleo)
-
-Se ejecuta **en el servidor** al atender cada petición, o de forma local sin red:
-
-- **Lectura de audio**: `WavReader` parsea PCM y entrega muestras `double` en \([-1, 1]\). En modo REST esta lectura ocurre en el **cliente**.
-- **Productor (`WavProducerTask`)**: Trocea la señal y encola bloques en una `BlockingQueue` acotada (*backpressure*).
-- **Workers (`FFTWorker`)**: Pool de hilos (`ExecutorService`) que calcula FFT, magnitudes y escribe en `SharedResultMatrix`.
-- **Orquestador (`FFTPipelineManager`)**: Método `compute(samples, windowSize, hopSize, numWorkers)` reutilizado por la API.
-
-### 2. Modo distribuido (cliente-servidor REST)
+Para mantener una clara separación de responsabilidades y preparar el despliegue nativo en la nube (Kubernetes / HPA), el sistema se divide en 4 microservicios más infraestructura de almacenamiento (MinIO S3 y PostgreSQL):
 
 ```text
-  [ RestFftClient ]                         [ Spring Boot :8080 ]
-        │                                           │
-        │  1. Lee WAV local (WavReader)             │
-        │  2. POST /api/fft/spectrogram             │
-        │     Content-Type: application/json        │
-        └────────────── JSON ──────────────────────►│
-                                                    │  FftController
-                                                    │  FftComputeService
-                                                    │  FFTPipelineManager.compute(...)
-        ◄──────────── JSON ─────────────────────────┘
-           frames, bins, magnitudes[frame][bin], computeMs
+                                  [ PWA / Frontend ] (:3000 Nginx)
+                                          │
+                                          │ HTTP (Multipart / JSON)
+                                          ▼
+                               ┌──────────────────────┐
+                               │   1. API GATEWAY     │ :8080
+                               │ (Spring Cloud GW MVC)│
+                               └──────────┬───────────┘
+                                          │
+                  ┌───────────────────────┼───────────────────────┐
+                  │ REST (/api/fft/**)    │ REST (/internal/fft)  │ REST (/api/history/**)
+                  ▼                       ▼                       ▼
+      ┌──────────────────────┐ ┌──────────────────────┐ ┌──────────────────────┐
+      │   2. AUDIO INGESTION │ │   3. FFT WORKER      │ │   4. SPECTRO-STORAGE │
+      │      SERVICE         │─►      SERVICE         │ │      SERVICE         │
+      │       :8081          │ │  :8082, :8083, ...   │ │       :8085          │
+      └──────────┬───────────┘ └──────────────────────┘ └──────────┬───────────┘
+                 │                                                 │
+                 ▼                                                 ▼
+       [ MinIO / S3 Local ]                                [ PostgreSQL 16 ]
+      (Archivos .WAV brutos)                             (Metadatos y Matrices)
 ```
 
-- **Servidor**: `DistriFourierApplication` (Tomcat embebido, puerto **8080**).
-- **API**: `POST /api/fft/spectrogram`.
-- **Cliente**: `RestFftClient`. No abre sockets crudos ni usa RMI; solo HTTP.
+---
 
-**Petición**
+## 2. Responsabilidades de Cada Microservicio
 
-```json
-{
-  "samples": [0.0, 0.12, -0.05],
-  "windowSize": 1024,
-  "hopSize": 512
-}
+### A. Microservicio 1: API Gateway (`api-gateway` — `:8080`)
+- **Rol**: Punto único de entrada para la PWA y clientes externos.
+- **Tecnología**: `spring-cloud-starter-gateway-mvc` sobre Tomcat imperativo (óptimo para streaming `multipart/form-data` hasta `50MB`).
+- **Funciones**:
+  - Enrutamiento inverso (`/api/fft/**` $\rightarrow$ `service-ingestion:8081`, `/api/history/**` $\rightarrow$ `service-storage:8085`).
+  - Gestión centralizada de CORS para la PWA.
+  - Endpoints de monitoreo (`/actuator/health`, `/actuator/info`).
+
+### B. Microservicio 2: Audio Ingestion & Preprocessing Service (`service-ingestion` — `:8081`)
+- **Rol**: Manejo de archivos, validación de señal y orquestador Scatter-Gather.
+- **Funciones**:
+  - Recibe el archivo `.wav` desde la PWA vía `multipart/form-data` (hasta `50MB`) o muestras JSON.
+  - Valida la integridad de la cabecera RIFF/WAVE y decodifica muestras PCM (8/16/24-bit, mono/downmix estéreo) con `WavReader`.
+  - Almacena el `.wav` original en **MinIO** (compatible con AWS S3) en el bucket `distrifourier-wavs` y emite un `audioId`.
+  - **Particionado Scatter con margen de ventana (`ScatterPartitioner`)**: Divide el total de ventanas (`totalFrames`) entre las instancias activas de `service-worker-fft`. Para que cada worker procese `count` ventanas desde `startFrame` sin desfase ni truncamiento en los bordes de solapamiento:
+    $$\text{startSample} = \text{startFrame} \times \text{hopSize}$$
+    $$\text{endSample} = \text{startSample} + (\text{count} - 1) \times \text{hopSize} + \text{windowSize}$$
+  - Despacha los sub-bloques en paralelo (`CompletableFuture` + hilos virtuales de Java 21) hacia los workers y ensambla la matriz consolidada `double[frames][bins]`.
+
+### C. Microservicio 3: FFT Compute Worker Service (`service-worker-fft` — `:8082`, `:8083`, ...)
+- **Rol**: Unidad de cómputo intensivo (*CPU-bound*) completamente *stateless*.
+- **Funciones**:
+  - Expone `POST /internal/fft/compute`.
+  - Ejecuta el pipeline concurrente (`FFTPipelineManager`: Productor-Consumidor con `BlockingQueue`, función de ventaneo Hann y algoritmo Cooley-Tukey $O(N \log N)$) explotando todos los hilos de CPU del contenedor.
+  - **Escalabilidad Horizontal**: En local se levantan múltiples réplicas en `docker-compose.yml` (`worker-fft-1:8082`, `worker-fft-2:8083`); en Kubernetes escala automáticamente con un *Horizontal Pod Autoscaler (HPA)*.
+
+### D. Microservicio 4: Spectrogram Storage & History Service (`service-storage` — `:8085`)
+- **Rol**: Persistencia de espectrogramas e historial de análisis.
+- **Funciones**:
+  - Almacena en **PostgreSQL** (`spectrogram_history`) los metadatos del análisis y la matriz `double[][]` codificada en binario `float32` + compresión **GZIP** (`MatrixCompressionCodec`), reduciendo en ~85% el espacio en disco.
+  - Expone `POST /api/history`, `GET /api/history`, `GET /api/history/{id}` y `DELETE /api/history/{id}` para que la PWA recupere espectrogramas previos sin recomputar la FFT.
+
+---
+
+## 3. Estructura del Proyecto (Maven Multi-Módulo)
+
+```text
+DistriFourier/
+├── pom.xml                               # POM padre (Spring Boot 3.4.4, Spring Cloud 2024.0.1, Java 21)
+├── docker-compose.yml                    # Orquestador local completo (MinIO, Postgres, 4 servicios, PWA)
+├── core-fft/                             # Librería común (Complex, FFT, WindowFunction, WavReader, ScatterPartitioner, DTOs)
+│   └── src/main/java/escom/chris/...
+├── api-gateway/                          # Microservicio 1: Spring Cloud Gateway MVC (:8080)
+│   ├── Dockerfile
+│   └── src/main/java/escom/chris/gateway/...
+├── service-ingestion/                    # Microservicio 2: Ingesta WAV, S3 MinIO y Scatter-Gather (:8081)
+│   ├── Dockerfile
+│   └── src/main/java/escom/chris/ingestion/...
+├── service-worker-fft/                   # Microservicio 3: Worker stateless de cálculo FFT (:8082, :8083)
+│   ├── Dockerfile
+│   └── src/main/java/escom/chris/worker/...
+├── service-storage/                      # Microservicio 4: Persistencia PostgreSQL + GZIP (:8085)
+│   ├── Dockerfile
+│   └── src/main/java/escom/chris/storage/...
+└── frontend-pwa/                         # Progressive Web App servida con Nginx (:3000 -> :80)
+    ├── Dockerfile
+    ├── nginx.conf
+    ├── index.html, styles.css, manifest.json, sw.js
+    └── js/ (app.js, api.js, spectrogram.js, colormap.js, storage.js)
 ```
 
-Si `windowSize` u `hopSize` se omiten, el servidor usa `1024` y `windowSize / 2`.
+---
 
-**Respuesta**
+## 4. Ejecución con Docker Compose (Recomendado)
 
-```json
-{
-  "frames": 128,
-  "bins": 512,
-  "magnitudes": [[0.01, 0.02], [0.03, 0.04]],
-  "computeMs": 45
-}
-```
-
-`magnitudes` usa layout **`[frame][bin]`**.
-
-**Variante multipart (la usa la PWA)**: el mismo endpoint acepta `multipart/form-data` con el `.wav` crudo (campo `file`) y los parámetros `windowSize` / `hopSize`. El servidor decodifica el WAV con `WavReader`, por lo que la respuesta incluye además `sampleRate`, `windowSize` y `hopSize`. Las magnitudes vienen en **dB**.
+Levanta toda la infraestructura (MinIO, PostgreSQL, 2 Workers FFT, Storage Service, Ingestion Service, API Gateway y la PWA en Nginx) con un solo comando:
 
 ```bash
-curl -F file=@src/main/resources/audio.wav -F windowSize=1024 -F hopSize=512 \
+docker compose up --build
+```
+
+### Puertos expuestos:
+| Servicio | URL Local | Descripción |
+| :--- | :--- | :--- |
+| **PWA Frontend** | `http://localhost:3000` | Interfaz gráfica web instalable (Canvas Inferno + Historial híbrido) |
+| **API Gateway** | `http://localhost:8080` | Punto único de entrada REST (`/api/fft/spectrogram`, `/api/history`) |
+| **Audio Ingestion** | `http://localhost:8081` | Recepción multipart, MinIO S3 y Scatter-Gather |
+| **FFT Worker 1 & 2** | `http://localhost:8082`, `:8083` | Nodos de cómputo matemático FFT |
+| **Spectro-Storage** | `http://localhost:8085` | API de persistencia e historial sobre PostgreSQL |
+| **MinIO Console** | `http://localhost:9001` | Consola S3 (`minioadmin` / `minioadmin`) |
+| **PostgreSQL** | `localhost:5432` | Base de datos `fft_db` (`user` / `password`) |
+
+Prueba rápida por consola contra el API Gateway:
+
+```bash
+curl -F file=@core-fft/src/main/resources/audio.wav -F windowSize=1024 -F hopSize=512 \
      http://localhost:8080/api/fft/spectrogram
 ```
 
-CORS está habilitado en `/api/**` para los orígenes de `app.cors.allowed-origins` (por defecto `http://localhost:*` y `http://127.0.0.1:*`).
+Consultar el historial persistido en PostgreSQL:
 
-### 3. Cliente web (PWA)
-
-`frontend/` contiene una Progressive Web App en HTML/CSS/JS modular, sin dependencias ni paso de compilación:
-
-- Carga de `.wav` por drag & drop o selector, con `windowSize` / `hopSize` configurables.
-- Barra de progreso en tres fases: subida → cálculo en backend → descarga de la matriz.
-- Espectrograma en `<canvas>` (paleta tipo *inferno*), ejes de tiempo/frecuencia, cursor con tooltip (t, f, dB) y control de rango dinámico.
-- Historial de los últimos 3 espectrogramas en IndexedDB, consultable sin red.
-- `manifest.json` + `sw.js` (caché del App Shell) para instalarla y abrirla offline.
-
----
-
-## Estructura del proyecto
-
-```text
-src/main/java/escom/chris/
-├── DistriFourierApplication.java   # Arranque Spring Boot
-├── Main.java                       # Pipeline local (sin red)
-├── FFTPipelineManager.java         # Orquestador productor-consumidor
-├── BenchmarkRunner.java            # Escalabilidad local (hilos)
-├── api/
-│   ├── FftController.java          # POST /api/fft/spectrogram
-│   ├── FftComputeService.java      # Valida y llama al pipeline
-│   ├── CorsConfig.java             # CORS para la PWA
-│   └── dto/
-│       ├── SpectrogramRequest.java
-│       └── SpectrogramResponse.java
-├── client/
-│   └── RestFftClient.java          # Cliente HTTP
-├── audio/
-│   ├── AudioChunk.java
-│   └── WavReader.java
-├── concurrency/
-│   ├── FFTWorker.java
-│   ├── SharedResultMatrix.java
-│   └── WavProducerTask.java
-└── math/
-    ├── Complex.java
-    ├── FastFourierTransform.java
-    └── WindowFunction.java
-
-src/main/resources/
-├── application.properties          # Puerto 8080 y límites multipart
-└── audio.wav                       # Señal de prueba
+```bash
+curl http://localhost:8080/api/history
 ```
 
-`pom.xml`: Spring Boot **3.4.4**, Java **21**, `spring-boot-starter-web`.
-
 ---
 
-## Compilación y ejecución
+## 5. Compilación y Ejecución en Desarrollo Local (Sin Docker)
 
 ### Requisitos
 - **JDK 21** o superior
-- **Apache Maven** (o el Maven embebido de IntelliJ / NetBeans)
+- **Apache Maven 3.9+**
+
+### 1. Compilar y ejecutar pruebas unitarias (incluyendo verificación del particionado Scatter-Gather)
 
 ```bash
-mvn clean compile
+mvn clean test package
 ```
 
-### 1. Servidor REST
+### 2. Levantar los servicios manualmente en terminales separadas
+
+Todos los servicios cuentan con *graceful degradation* para desarrollo local (por ejemplo, `service-storage` incluye el perfil `local` con base de datos en memoria H2, y `service-ingestion` continúa operando si MinIO no está activo):
 
 ```bash
-mvn spring-boot:run
+# Terminal 1: Worker FFT 1 (:8082)
+mvn -pl service-worker-fft spring-boot:run
+
+# Terminal 2: Worker FFT 2 (:8083)
+mvn -pl service-worker-fft spring-boot:run -Dspring-boot.run.arguments="--server.port=8083"
+
+# Terminal 3: Storage Service con H2 en memoria (:8085)
+mvn -pl service-storage spring-boot:run -Dspring-boot.run.profiles=local
+
+# Terminal 4: Ingestion Service (:8081)
+mvn -pl service-ingestion spring-boot:run
+
+# Terminal 5: API Gateway (:8080)
+mvn -pl api-gateway spring-boot:run
 ```
 
-En IntelliJ: ejecutar `escom.chris.DistriFourierApplication`.
-
-El servidor queda en `http://localhost:8080`.
-
-### 2. Cliente HTTP
-
-En otra terminal (o configuración de ejecución de `RestFftClient`):
+### 3. Cliente CLI HTTP y Benchmarks locales (`core-fft`)
 
 ```bash
-mvn -q exec:java "-Dexec.mainClass=escom.chris.client.RestFftClient" "-Dexec.args=http://localhost:8080 src/main/resources/audio.wav 1024 512"
+# Cliente HTTP contra el API Gateway (:8080)
+mvn -q -pl service-ingestion exec:java "-Dexec.mainClass=escom.chris.client.RestFftClient" "-Dexec.args=http://localhost:8080 core-fft/src/main/resources/audio.wav 1024 512"
+
+# Benchmark de escalabilidad de hilos (en un nodo)
+mvn -q -pl core-fft exec:java "-Dexec.mainClass=escom.chris.BenchmarkRunner" "-Dexec.args=core-fft/src/main/resources/audio.wav"
 ```
-
-Argumentos: `[baseUrl] [archivo.wav] [windowSize] [hopSize]`.
-
-Por defecto: `http://localhost:8080`, `src/main/resources/audio.wav`, ventana `1024`, hop `512`.
-
-### 3. Pipeline local (sin red)
-
-```bash
-mvn -q exec:java "-Dexec.mainClass=escom.chris.Main" "-Dexec.args=src/main/resources/audio.wav 4 1024 512 espectrograma.csv"
-```
-
-Uso: `Main <archivo.wav> [numWorkers] [windowSize] [hopSize] [salida.csv]`.
-
-### 4. PWA
-
-Con el servidor REST corriendo, sirve `frontend/` con cualquier servidor estático en `localhost` (los Service Workers exigen `localhost` o HTTPS):
-
-```bash
-cd frontend
-python3 -m http.server 5173     # o: npx serve -l 5173
-```
-
-Abre `http://localhost:5173`. La URL del backend se puede cambiar desde el panel lateral. Si sirves la PWA desde otro origen, agrégalo a `app.cors.allowed-origins`. Al modificar archivos del frontend, incrementa `CACHE_VERSION` en `sw.js` para que los clientes instalados reciban la versión nueva.
-
-### 5. Benchmark de hilos (local)
-
-```bash
-mvn -q exec:java "-Dexec.mainClass=escom.chris.BenchmarkRunner" "-Dexec.args=src/main/resources/audio.wav"
-```
-
-Mide speedup y eficiencia del pipeline concurrente en un solo proceso; no usa la API REST.

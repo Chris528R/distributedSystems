@@ -12,34 +12,46 @@
     </parent>
 
     <groupId>escom.chris</groupId>
-    <artifactId>DistriFourier</artifactId>
+    <artifactId>distrifourier-microservices</artifactId>
     <version>1.0-SNAPSHOT</version>
-    <name>DistriFourier</name>
-    <description>FFT distribuida sobre API REST con Spring Boot</description>
+    <packaging>pom</packaging>
+    <name>DistriFourier Microservices</name>
+    <description>Sistema distribuido de cálculo de espectrogramas FFT basado en microservicios</description>
+
+    <modules>
+        <module>core-fft</module>
+        <module>api-gateway</module>
+        <module>service-ingestion</module>
+        <module>service-worker-fft</module>
+        <module>service-storage</module>
+    </modules>
 
     <properties>
         <java.version>21</java.version>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <spring-cloud.version>2024.0.1</spring-cloud.version>
+        <minio.version>8.5.14</minio.version>
     </properties>
 
-    <dependencies>
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-web</artifactId>
-        </dependency>
-    </dependencies>
-
-    <build>
-        <plugins>
-            <plugin>
-                <groupId>org.springframework.boot</groupId>
-                <artifactId>spring-boot-maven-plugin</artifactId>
-            </plugin>
-            <plugin>
-                <groupId>org.codehaus.mojo</groupId>
-                <artifactId>exec-maven-plugin</artifactId>
-                <version>3.5.0</version>
-            </plugin>
-        </plugins>
-    </build>
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>org.springframework.cloud</groupId>
+                <artifactId>spring-cloud-dependencies</artifactId>
+                <version>${spring-cloud.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+            <dependency>
+                <groupId>escom.chris</groupId>
+                <artifactId>core-fft</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.minio</groupId>
+                <artifactId>minio</artifactId>
+                <version>${minio.version}</version>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
 </project>
